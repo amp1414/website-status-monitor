@@ -1,0 +1,256 @@
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+from zoneinfo import ZoneInfo
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = BASE_DIR / "data"
+LOGS_DIR = DATA_DIR / "logs"
+STATUS_JSON = DATA_DIR / "status.json"
+CONFIG_XLSX = DATA_DIR / "sites.xlsx"
+
+WINDOW_DAYS = 7
+RETENTION_DAYS = 30
+EASTERN = ZoneInfo("America/Toronto")
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def last_n_days_paths(n_days: int) -> list[Path]:
+    today = datetime.now(timezone.utc).date()
+    return [
+        LOGS_DIR / f"{(today - timedelta(days=i)).isoformat()}.csv"
+        for i in range(n_days)
+    ]
+
+
+def load_logs(paths: list[Path]) -> pd.DataFrame:
+    dfs = []
+    for p in paths:
+        if p.exists():
+            dfs.append(pd.read_csv(p))
+
+    if not dfs:
+        return pd.DataFrame()
+
+    df = pd.concat(dfs, ignore_index=True)
+
+    df["ts_utc"] = pd.to_datetime(df["ts_utc"], utc=True, errors="coerce")
+    df["site_id"] = pd.to_numeric(df["site_id"], errors="coerce")
+    df["endpoint_id"] = pd.to_numeric(df["endpoint_id"], errors="coerce")
+
+    return df
+
+
+def load_config(xlsx_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not xlsx_path.exists():
+        raise FileNotFoundError(f"Missing config: {xlsx_path}")
+
+    sites_df = pd.read_excel(xlsx_path, sheet_name="sites")
+    endpoints_df = pd.read_excel(xlsx_path, sheet_name="endpoints")
+
+    sites_df["site_id"] = pd.to_numeric(sites_df["site_id"], errors="coerce")
+    endpoints_df["site_id"] = pd.to_numeric(endpoints_df["site_id"], errors="coerce")
+    endpoints_df["endpoint_id"] = pd.to_numeric(endpoints_df["endpoint_id"], errors="coerce")
+
+    if "enabled" in sites_df.columns:
+        enabled_ids = set(
+            sites_df.loc[sites_df["enabled"] == 1, "site_id"].dropna().astype(int)
+        )
+        endpoints_df = endpoints_df[
+            endpoints_df["site_id"].astype(int).isin(enabled_ids)
+        ].copy()
+
+    return sites_df, endpoints_df
+
+
+# --------------------------------------------------------
+# Timeline Builder (for stripe visualization)
+# --------------------------------------------------------
+
+def build_timeline(df_one: pd.DataFrame) -> list[dict]:
+    if df_one.empty:
+        return []
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=WINDOW_DAYS)
+
+    df_one = df_one[
+        (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
+    ].sort_values("ts_utc")
+
+    if df_one.empty:
+        return []
+
+    timestamps = df_one["ts_utc"].tolist()
+    states = df_one["state"].astype(str).tolist()
+
+    segments = []
+
+    for i in range(len(timestamps)):
+        t0 = timestamps[i]
+        t1 = timestamps[i + 1] if i + 1 < len(timestamps) else end
+        duration = max(0, int((t1 - t0).total_seconds()))
+
+        state = states[i]
+
+        if segments and segments[-1]["state"] == state:
+            segments[-1]["duration_seconds"] += duration
+        else:
+            segments.append({
+                "state": state,
+                "duration_seconds": duration
+            })
+
+    return segments
+
+#Format to EST time
+def format_eastern(dt_utc):
+    if pd.isna(dt_utc):
+        return None
+
+    dt_local = dt_utc.astimezone(EASTERN)
+    return dt_local.strftime("%b %d, %Y • %I:%M %p")
+
+# --------------------------------------------------------
+# Snapshot Builder
+# --------------------------------------------------------
+
+def compute_snapshot(df: pd.DataFrame,
+                     sites_df: pd.DataFrame,
+                     endpoints_df: pd.DataFrame) -> dict:
+
+    snapshot = {
+        "generated_at": format_eastern(datetime.now(timezone.utc)),
+        "window_days": WINDOW_DAYS,
+        "sites": [],
+    }
+
+    if df.empty:
+        return snapshot
+
+    df = df.sort_values("ts_utc")
+
+    latest = df.groupby(["site_id", "endpoint_id"], dropna=False).tail(1).copy()
+
+    # Uptime calculation (UP + REVIEW count as success)
+    df["is_success"] = df["state"].isin(["UP", "REVIEW"])
+    uptime = (
+        df.groupby(["site_id", "endpoint_id"])["is_success"]
+        .mean()
+        .reset_index()
+        .rename(columns={"is_success": "uptime"})
+    )
+
+    latest = latest.merge(
+        uptime, on=["site_id", "endpoint_id"], how="left"
+    )
+
+    # Join metadata
+    sites_meta = sites_df[["site_id", "name"]].drop_duplicates()
+    latest = latest.merge(sites_meta, on="site_id", how="left")
+
+    ep_meta = endpoints_df[
+        ["site_id", "endpoint_id", "url", "method", "slow_ms"]
+    ].drop_duplicates()
+
+    latest = latest.merge(
+        ep_meta, on=["site_id", "endpoint_id"], how="left"
+    )
+
+    groups = df.groupby(["site_id", "endpoint_id"])
+
+    for _, row in latest.iterrows():
+
+        if pd.isna(row["site_id"]) or pd.isna(row["endpoint_id"]):
+            continue
+
+        key = (row["site_id"], row["endpoint_id"])
+
+        timeline = []
+        if key in groups.groups:
+            timeline = build_timeline(groups.get_group(key))
+
+        item = {
+            "site_id": int(row["site_id"]),
+            "site_name": "" if pd.isna(row.get("name")) else str(row.get("name")),
+            "endpoint_id": int(row["endpoint_id"]),
+            "url": "" if pd.isna(row.get("url")) else str(row.get("url")),
+            "method": "" if pd.isna(row.get("method")) else str(row.get("method")),
+            "slow_ms": int(row["slow_ms"]) if pd.notna(row.get("slow_ms")) else None,
+
+            "state": str(row["state"]),
+            "status_code": (
+                int(row["status_code"])
+                if pd.notna(row.get("status_code")) and str(row["status_code"]).isdigit()
+                else ""
+            ),
+            "error_type": "" if pd.isna(row.get("error_type")) else str(row.get("error_type")),
+            "error_detail": "" if pd.isna(row.get("error_detail")) else str(row.get("error_detail")),
+            "latency_ms": int(row["latency_ms"]) if pd.notna(row.get("latency_ms")) else None,
+            "attempts": int(row["attempts"]) if pd.notna(row.get("attempts")) else None,
+            "slow": int(row["slow"]) if pd.notna(row.get("slow")) else 0,
+            "last_checked": format_eastern(row.get("ts_utc")),
+            "uptime_7d_percent": round(float(row["uptime"]) * 100.0, 2)
+                if pd.notna(row.get("uptime")) else None,
+
+            "timeline_7d": timeline,
+        }
+
+        snapshot["sites"].append(item)
+
+    # Sort
+    order = {"DOWN": 0, "REVIEW": 1, "UP": 2}
+    snapshot["sites"].sort(
+        key=lambda x: (order.get(x["state"], 9), x["site_name"])
+    )
+
+    return snapshot
+
+
+# --------------------------------------------------------
+# Log Cleanup
+# --------------------------------------------------------
+
+def cleanup_old_logs(retention_days: int) -> None:
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=retention_days)
+
+    for p in LOGS_DIR.glob("*.csv"):
+        if len(p.stem) != 10:
+            continue
+        try:
+            file_date = datetime.fromisoformat(p.stem).date()
+            if file_date < cutoff:
+                p.unlink()
+        except Exception:
+            continue
+
+
+# --------------------------------------------------------
+# Main
+# --------------------------------------------------------
+
+def main() -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    paths = last_n_days_paths(WINDOW_DAYS)
+    df = load_logs(paths)
+
+    sites_df, endpoints_df = load_config(CONFIG_XLSX)
+
+    snapshot = compute_snapshot(df, sites_df, endpoints_df)
+
+    tmp = STATUS_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    tmp.replace(STATUS_JSON)
+
+    print(f"Wrote {STATUS_JSON}")
+
+    cleanup_old_logs(RETENTION_DAYS)
+
+
+if __name__ == "__main__":
+    main()

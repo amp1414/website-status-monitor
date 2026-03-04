@@ -1,0 +1,176 @@
+{
+  "generated_at": "Mar 03, 2026 \u2022 12:29 PM",
+  "window_days": 7,
+  "sites": [
+    {
+      "site_id": 4,
+      "site_name": "Httpbin503",
+      "endpoint_id": 4,
+      "url": "https://httpbin.org/status/503",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "DOWN",
+      "status_code": "",
+      "error_type": "http_503",
+      "error_detail": "",
+      "latency_ms": 302,
+      "attempts": 3,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 0.0,
+      "timeline_7d": [
+        {
+          "state": "DOWN",
+          "duration_seconds": 124735
+        }
+      ]
+    },
+    {
+      "site_id": 2,
+      "site_name": "Wikipedia",
+      "endpoint_id": 2,
+      "url": "https://www.wikipedia.org",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "DOWN",
+      "status_code": "",
+      "error_type": "http_403",
+      "error_detail": "",
+      "latency_ms": 92,
+      "attempts": 3,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 0.0,
+      "timeline_7d": [
+        {
+          "state": "DOWN",
+          "duration_seconds": 124735
+        }
+      ]
+    },
+    {
+      "site_id": 1,
+      "site_name": "Google",
+      "endpoint_id": 6,
+      "url": "http://google.com",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "REVIEW",
+      "status_code": "",
+      "error_type": "http_301",
+      "error_detail": "",
+      "latency_ms": 86,
+      "attempts": 1,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 100.0,
+      "timeline_7d": [
+        {
+          "state": "REVIEW",
+          "duration_seconds": 124735
+        }
+      ]
+    },
+    {
+      "site_id": 3,
+      "site_name": "GitHub",
+      "endpoint_id": 3,
+      "url": "https://github.com/",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "UP",
+      "status_code": "",
+      "error_type": "",
+      "error_detail": "",
+      "latency_ms": 197,
+      "attempts": 1,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 99.4,
+      "timeline_7d": [
+        {
+          "state": "UP",
+          "duration_seconds": 84250
+        },
+        {
+          "state": "DOWN",
+          "duration_seconds": 18
+        },
+        {
+          "state": "UP",
+          "duration_seconds": 4505
+        },
+        {
+          "state": "DOWN",
+          "duration_seconds": 21
+        },
+        {
+          "state": "UP",
+          "duration_seconds": 35941
+        }
+      ]
+    },
+    {
+      "site_id": 1,
+      "site_name": "Google",
+      "endpoint_id": 1,
+      "url": "https://www.google.com",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "UP",
+      "status_code": "",
+      "error_type": "",
+      "error_detail": "",
+      "latency_ms": 155,
+      "attempts": 1,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 99.7,
+      "timeline_7d": [
+        {
+          "state": "UP",
+          "duration_seconds": 95609
+        },
+        {
+          "state": "DOWN",
+          "duration_seconds": 28
+        },
+        {
+          "state": "UP",
+          "duration_seconds": 29098
+        }
+      ]
+    },
+    {
+      "site_id": 5,
+      "site_name": "Httpbin200",
+      "endpoint_id": 5,
+      "url": "https://httpbin.org/status/200",
+      "method": "GET",
+      "slow_ms": 2000,
+      "state": "UP",
+      "status_code": "",
+      "error_type": "",
+      "error_detail": "",
+      "latency_ms": 656,
+      "attempts": 1,
+      "slow": 0,
+      "last_checked": "Mar 03, 2026 \u2022 12:29 PM",
+      "uptime_7d_percent": 50.61,
+      "timeline_7d": [
+        {
+          "state": "UP",
+          "duration_seconds": 86267
+        },
+        {
+          "state": "DOWN",
+          "duration_seconds": 38462
+        },
+        {
+          "state": "UP",
+          "duration_seconds": 6
+        }
+      ]
+    }
+  ]
+}

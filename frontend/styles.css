@@ -1,0 +1,15 @@
+body { font-family: Arial, sans-serif; margin: 20px; }
+.row { border: 1px solid #ddd; border-radius: 8px; padding: 10px; margin: 10px 0; }
+.topline { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.name { font-weight: 700; }
+.meta { color: #666; font-size: 12px; }
+.badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ddd; }
+.badge.UP { background: #e8f7ea; }
+.badge.REVIEW { background: #fff6d6; }
+.badge.DOWN { background: #ffe3e3; }
+
+.stripe { margin-top: 8px; height: 12px; border-radius: 6px; overflow: hidden; border: 1px solid #eee; display: flex; }
+.seg { height: 100%; }
+.seg.UP { background: #2ecc71; }
+.seg.REVIEW { background: #f1c40f; }
+.seg.DOWN { background: #e74c3c; }
