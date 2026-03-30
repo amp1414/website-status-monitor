@@ -1,9 +1,9 @@
 import time
 from datetime import datetime
 
-from checker import main as run_checker
-from browser_audit import main as run_browser_audit
-from compute import main as run_compute
+from app.checker import main as run_checker
+from app.browser_audit import main as run_browser_audit
+from app.compute import main as run_compute
 
 INTERVAL_SECONDS = 3600  # hourly
 

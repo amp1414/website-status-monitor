@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from playwright.async_api import async_playwright
 
-from checker import CONFIG_XLSX, load_config
+from app.checker import CONFIG_XLSX, load_config
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]

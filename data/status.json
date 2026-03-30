@@ -1,5 +1,5 @@
 {
-  "generated_at": "Mar 29, 2026 \u2022 01:49 PM",
+  "generated_at": "Mar 29, 2026 \u2022 11:10 PM",
   "window_days": 7,
   "sites": [
     {
@@ -13,19 +13,19 @@
       "status_code": 503,
       "error_type": "http_503",
       "error_detail": "",
-      "latency_ms": 109,
+      "latency_ms": 119,
       "attempts": 3,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 0.0,
       "timeline_7d": [
         {
           "state": "DOWN",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "ISSUES",
-      "console_issue_count": 1,
+      "console_issue_count": 2,
       "console_ignored_count": 0,
       "console_issues_recent": [
         {
@@ -34,9 +34,16 @@
           "message": "Failed to load resource: the server responded with a status of 503 ()",
           "source_url": "https://httpbin.org/status/503",
           "is_exception": 0
+        },
+        {
+          "ts": "Mar 29, 2026 \u2022 11:10 PM",
+          "level": "error",
+          "message": "Failed to load resource: the server responded with a status of 503 ()",
+          "source_url": "https://httpbin.org/status/503",
+          "is_exception": 0
         }
       ],
-      "daily_screenshot_url": "/screenshots/daily/5/2026-03-29_endpoint_5.png",
+      "daily_screenshot_url": "/screenshots/daily/5/2026-03-30_endpoint_5.png",
       "last_event_screenshot_url": "/screenshots/events/5/2026-03-10T18-35-07_endpoint_5_UP_DOWN.png",
       "previous_state": "DOWN",
       "last_state_change_at": "Mar 10, 2026 \u2022 02:34 PM"
@@ -52,19 +59,19 @@
       "status_code": 503,
       "error_type": "http_503",
       "error_detail": "",
-      "latency_ms": 100,
+      "latency_ms": 94,
       "attempts": 3,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 0.0,
       "timeline_7d": [
         {
           "state": "DOWN",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "ISSUES",
-      "console_issue_count": 1,
+      "console_issue_count": 2,
       "console_ignored_count": 0,
       "console_issues_recent": [
         {
@@ -73,9 +80,16 @@
           "message": "Failed to load resource: the server responded with a status of 503 ()",
           "source_url": "https://httpbin.org/status/503",
           "is_exception": 0
+        },
+        {
+          "ts": "Mar 29, 2026 \u2022 11:10 PM",
+          "level": "error",
+          "message": "Failed to load resource: the server responded with a status of 503 ()",
+          "source_url": "https://httpbin.org/status/503",
+          "is_exception": 0
         }
       ],
-      "daily_screenshot_url": "/screenshots/daily/4/2026-03-29_endpoint_4.png",
+      "daily_screenshot_url": "/screenshots/daily/4/2026-03-30_endpoint_4.png",
       "last_event_screenshot_url": "",
       "previous_state": "DOWN",
       "last_state_change_at": ""
@@ -91,22 +105,22 @@
       "status_code": 403,
       "error_type": "http_403",
       "error_detail": "",
-      "latency_ms": 94,
+      "latency_ms": 109,
       "attempts": 3,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 0.0,
       "timeline_7d": [
         {
           "state": "DOWN",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "CLEAN",
       "console_issue_count": 0,
       "console_ignored_count": 0,
       "console_issues_recent": [],
-      "daily_screenshot_url": "/screenshots/daily/2/2026-03-29_endpoint_2.png",
+      "daily_screenshot_url": "/screenshots/daily/2/2026-03-30_endpoint_2.png",
       "last_event_screenshot_url": "",
       "previous_state": "DOWN",
       "last_state_change_at": ""
@@ -122,19 +136,19 @@
       "status_code": 301,
       "error_type": "http_301",
       "error_detail": "",
-      "latency_ms": 71,
+      "latency_ms": 48,
       "attempts": 1,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 100.0,
       "timeline_7d": [
         {
           "state": "REVIEW",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "ISSUES",
-      "console_issue_count": 2,
+      "console_issue_count": 4,
       "console_ignored_count": 0,
       "console_issues_recent": [
         {
@@ -150,9 +164,23 @@
           "message": "The Cross-Origin-Opener-Policy header has been ignored, because the URL's origin was untrustworthy. It was defined either in the final response or a redirect. Please deliver the response using the HTTPS protocol. You can also use the 'localhost' origin instead. See https://www.w3.org/TR/powerful-features/#potentially-trustworthy-origin and https://html.spec.whatwg.org/#the-cross-origin-opener-policy-header.",
           "source_url": "https://www.google.com/?gws_rd=ssl",
           "is_exception": 0
+        },
+        {
+          "ts": "Mar 29, 2026 \u2022 11:10 PM",
+          "level": "error",
+          "message": "The Cross-Origin-Opener-Policy header has been ignored, because the URL's origin was untrustworthy. It was defined either in the final response or a redirect. Please deliver the response using the HTTPS protocol. You can also use the 'localhost' origin instead. See https://www.w3.org/TR/powerful-features/#potentially-trustworthy-origin and https://html.spec.whatwg.org/#the-cross-origin-opener-policy-header.",
+          "source_url": "https://www.google.com/?gws_rd=ssl",
+          "is_exception": 0
+        },
+        {
+          "ts": "Mar 29, 2026 \u2022 11:10 PM",
+          "level": "error",
+          "message": "The Cross-Origin-Opener-Policy header has been ignored, because the URL's origin was untrustworthy. It was defined either in the final response or a redirect. Please deliver the response using the HTTPS protocol. You can also use the 'localhost' origin instead. See https://www.w3.org/TR/powerful-features/#potentially-trustworthy-origin and https://html.spec.whatwg.org/#the-cross-origin-opener-policy-header.",
+          "source_url": "https://www.google.com/?gws_rd=ssl",
+          "is_exception": 0
         }
       ],
-      "daily_screenshot_url": "/screenshots/daily/1/2026-03-29_endpoint_6.png",
+      "daily_screenshot_url": "/screenshots/daily/1/2026-03-30_endpoint_6.png",
       "last_event_screenshot_url": "",
       "previous_state": "REVIEW",
       "last_state_change_at": ""
@@ -168,20 +196,20 @@
       "status_code": 200,
       "error_type": "",
       "error_detail": "",
-      "latency_ms": 162,
+      "latency_ms": 213,
       "attempts": 1,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 100.0,
       "timeline_7d": [
         {
           "state": "UP",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "ISSUES",
-      "console_issue_count": 1,
-      "console_ignored_count": 4,
+      "console_issue_count": 2,
+      "console_ignored_count": 8,
       "console_issues_recent": [
         {
           "ts": "Mar 29, 2026 \u2022 01:49 PM",
@@ -189,9 +217,16 @@
           "message": "media failed: net::ERR_ABORTED",
           "source_url": "https://github.githubassets.com/assets/code-1_desktop-6d44c7cb53b4aebb.mp4",
           "is_exception": 0
+        },
+        {
+          "ts": "Mar 29, 2026 \u2022 11:10 PM",
+          "level": "requestfailed",
+          "message": "media failed: net::ERR_ABORTED",
+          "source_url": "https://github.githubassets.com/assets/code-1_desktop-6d44c7cb53b4aebb.mp4",
+          "is_exception": 0
         }
       ],
-      "daily_screenshot_url": "/screenshots/daily/3/2026-03-29_endpoint_3.png",
+      "daily_screenshot_url": "/screenshots/daily/3/2026-03-30_endpoint_3.png",
       "last_event_screenshot_url": "",
       "previous_state": "UP",
       "last_state_change_at": ""
@@ -207,22 +242,22 @@
       "status_code": 200,
       "error_type": "",
       "error_detail": "",
-      "latency_ms": 177,
+      "latency_ms": 131,
       "attempts": 1,
       "slow": 0,
-      "last_checked": "Mar 29, 2026 \u2022 01:48 PM",
+      "last_checked": "Mar 29, 2026 \u2022 11:09 PM",
       "uptime_7d_percent": 100.0,
       "timeline_7d": [
         {
           "state": "UP",
-          "duration_seconds": 47
+          "duration_seconds": 33711
         }
       ],
       "console_status": "CLEAN",
       "console_issue_count": 0,
       "console_ignored_count": 0,
       "console_issues_recent": [],
-      "daily_screenshot_url": "/screenshots/daily/1/2026-03-29_endpoint_1.png",
+      "daily_screenshot_url": "/screenshots/daily/1/2026-03-30_endpoint_1.png",
       "last_event_screenshot_url": "",
       "previous_state": "UP",
       "last_state_change_at": ""
