@@ -54,6 +54,11 @@ def load_logs(paths: list[Path]) -> pd.DataFrame:
     df["site_id"] = pd.to_numeric(df["site_id"], errors="coerce")
     df["endpoint_id"] = pd.to_numeric(df["endpoint_id"], errors="coerce")
 
+    if "status_code" in df.columns:
+        df["status_code"] = pd.to_numeric(df["status_code"], errors="coerce")
+    else:
+        df["status_code"] = pd.Series(dtype="float64")
+
     return df
 
 
@@ -130,7 +135,6 @@ def build_timeline(df_one: pd.DataFrame) -> list[dict]:
         t0 = timestamps[i]
         t1 = timestamps[i + 1] if i + 1 < len(timestamps) else end
         duration = max(0, int((t1 - t0).total_seconds()))
-
         state = states[i]
 
         if segments and segments[-1]["state"] == state:
@@ -161,6 +165,22 @@ def format_eastern(dt_utc):
     return dt_local.strftime("%b %d, %Y • %I:%M %p")
 
 
+def to_utc_iso(dt_utc):
+    if pd.isna(dt_utc) or dt_utc is None:
+        return ""
+
+    if isinstance(dt_utc, str):
+        try:
+            dt_utc = pd.to_datetime(dt_utc, utc=True, errors="coerce")
+        except Exception:
+            return ""
+
+    if pd.isna(dt_utc):
+        return ""
+
+    return dt_utc.isoformat()
+
+
 def load_previous_snapshot() -> dict:
     if not STATUS_JSON.exists():
         return {}
@@ -187,8 +207,8 @@ def path_to_artifact_url(path: Path) -> str:
 def ensure_event_screenshot(
     site_id: int,
     endpoint_id: int,
-    previous_state: str,
-    new_state: str,
+    from_state: str,
+    to_state: str,
 ) -> str:
     source = daily_screenshot_path(site_id, endpoint_id)
     if not source.exists():
@@ -198,7 +218,7 @@ def ensure_event_screenshot(
     events_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    out = events_dir / f"{ts}_endpoint_{endpoint_id}_{previous_state}_{new_state}.png"
+    out = events_dir / f"{ts}_endpoint_{endpoint_id}_{from_state}_{to_state}.png"
 
     try:
         shutil.copy2(source, out)
@@ -250,6 +270,15 @@ def summarize_browser_group(df_group: pd.DataFrame) -> dict:
     }
 
 
+def normalize_status_code(value):
+    if pd.isna(value) or value is None or value == "":
+        return ""
+    try:
+        return int(float(value))
+    except Exception:
+        return ""
+
+
 def compute_snapshot(
     df: pd.DataFrame,
     sites_df: pd.DataFrame,
@@ -257,7 +286,6 @@ def compute_snapshot(
     browser_df: pd.DataFrame,
     previous_snapshot: dict,
 ) -> dict:
-
     snapshot = {
         "generated_at": format_eastern(datetime.now(timezone.utc)),
         "window_days": WINDOW_DAYS,
@@ -334,21 +362,48 @@ def compute_snapshot(
         daily_url = path_to_artifact_url(daily_shot) if daily_shot.exists() else ""
 
         prev_item = prev_by_key.get(key, {})
-        prev_state = "" if not prev_item else str(prev_item.get("state", ""))
+
+        prev_current_state = "" if not prev_item else str(prev_item.get("state", ""))
+        prev_current_status_code = "" if not prev_item else normalize_status_code(prev_item.get("status_code"))
+
         new_state = str(row["state"])
+        new_status_code = normalize_status_code(row.get("status_code"))
 
-        last_event_screenshot_url = ""
-        last_state_change_at = ""
+        # Carry forward the last real recorded change info unless a new change happens now
+        change_from_state = "" if not prev_item else str(prev_item.get("change_from_state", "") or "")
+        change_from_status_code = "" if not prev_item else normalize_status_code(prev_item.get("change_from_status_code"))
+        change_to_state = "" if not prev_item else str(prev_item.get("change_to_state", "") or "")
+        change_to_status_code = "" if not prev_item else normalize_status_code(prev_item.get("change_to_status_code"))
+        last_event_screenshot_url = "" if not prev_item else str(prev_item.get("last_event_screenshot_url", "") or "")
+        last_state_change_at = "" if not prev_item else str(prev_item.get("last_state_change_at", "") or "")
+        last_state_change_at_utc = "" if not prev_item else str(prev_item.get("last_state_change_at_utc", "") or "")
 
-        if prev_item:
-            last_event_screenshot_url = str(prev_item.get("last_event_screenshot_url", "") or "")
-            last_state_change_at = str(prev_item.get("last_state_change_at", "") or "")
+        # Preserve compatibility fields too
+        previous_state = "" if not prev_item else str(prev_item.get("previous_state", "") or "")
+        previous_status_code = "" if not prev_item else normalize_status_code(prev_item.get("previous_status_code"))
 
-        if prev_state and prev_state != new_state:
-            new_event_url = ensure_event_screenshot(site_id, endpoint_id, prev_state, new_state)
+        # Only create/update event record when the main status actually changes
+        if prev_current_state and prev_current_state != new_state:
+            new_event_url = ensure_event_screenshot(
+                site_id,
+                endpoint_id,
+                prev_current_state,
+                new_state,
+            )
             if new_event_url:
                 last_event_screenshot_url = new_event_url
+
             last_state_change_at = format_eastern(row.get("ts_utc"))
+            last_state_change_at_utc = to_utc_iso(row.get("ts_utc"))
+
+            change_from_state = prev_current_state
+            change_from_status_code = prev_current_status_code
+            change_to_state = new_state
+            change_to_status_code = new_status_code
+
+            # Keep compatibility fields aligned with the actual last change record
+            previous_state = prev_current_state
+            previous_status_code = prev_current_status_code
 
         item = {
             "site_id": site_id,
@@ -359,11 +414,18 @@ def compute_snapshot(
             "slow_ms": int(row["slow_ms"]) if pd.notna(row.get("slow_ms")) else None,
 
             "state": new_state,
-            "status_code": (
-                int(row["status_code"])
-                if pd.notna(row.get("status_code")) and str(row["status_code"]).isdigit()
-                else ""
-            ),
+            "status_code": new_status_code,
+
+            # Compatibility fields
+            "previous_state": previous_state,
+            "previous_status_code": previous_status_code,
+
+            # True last-change record
+            "change_from_state": change_from_state,
+            "change_from_status_code": change_from_status_code,
+            "change_to_state": change_to_state,
+            "change_to_status_code": change_to_status_code,
+
             "error_type": "" if pd.isna(row.get("error_type")) else str(row.get("error_type")),
             "error_detail": "" if pd.isna(row.get("error_detail")) else str(row.get("error_detail")),
             "latency_ms": int(row["latency_ms"]) if pd.notna(row.get("latency_ms")) else None,
@@ -382,8 +444,8 @@ def compute_snapshot(
 
             "daily_screenshot_url": daily_url,
             "last_event_screenshot_url": last_event_screenshot_url,
-            "previous_state": prev_state,
             "last_state_change_at": last_state_change_at,
+            "last_state_change_at_utc": last_state_change_at_utc,
         }
 
         snapshot["sites"].append(item)

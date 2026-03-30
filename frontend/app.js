@@ -1,3 +1,5 @@
+const CHANGED_PILL_WINDOW_HOURS = 24;
+
 async function load() {
   const res = await fetch(`/api/status?t=${Date.now()}`, { cache: "no-store" });
   const data = await res.json();
@@ -24,7 +26,8 @@ async function load() {
     badge.textContent = s.state || "UNKNOWN";
     heroMedia.appendChild(badge);
 
-    if (s.last_event_screenshot_url) {
+    const showChangedPill = isRecentStatusChange(s.last_state_change_at_utc);
+    if (showChangedPill) {
       const changed = document.createElement("span");
       changed.className = "change-pill";
       changed.textContent = "Changed";
@@ -70,8 +73,9 @@ async function load() {
     url.textContent = s.url || "-";
     body.appendChild(url);
 
-    const consoleRow = document.createElement("div");
-    consoleRow.className = "card-console-row";
+    // Default summary row: console + issues + current status code
+    const summaryRow = document.createElement("div");
+    summaryRow.className = "card-console-row";
 
     const consoleStatus = document.createElement("span");
     consoleStatus.className = `mini-console-badge ${s.console_status || "CLEAN"}`;
@@ -83,9 +87,14 @@ async function load() {
     const ignoredCount = s.console_ignored_count ?? 0;
     consoleText.textContent = `Issues: ${issueCount}${ignoredCount ? ` • Ignored: ${ignoredCount}` : ""}`;
 
-    consoleRow.appendChild(consoleStatus);
-    consoleRow.appendChild(consoleText);
-    body.appendChild(consoleRow);
+    const statusCode = document.createElement("span");
+    statusCode.className = "card-status-code";
+    statusCode.textContent = `Code: ${formatStatusCode(s.status_code)}`;
+
+    summaryRow.appendChild(consoleStatus);
+    summaryRow.appendChild(consoleText);
+    summaryRow.appendChild(statusCode);
+    body.appendChild(summaryRow);
 
     // Optional compact meta
     const meta = document.createElement("div");
@@ -115,8 +124,15 @@ async function load() {
       Array.isArray(s.console_issues_recent) && s.console_issues_recent.length > 0;
     const hasDaily = !!s.daily_screenshot_url;
     const hasEvent = !!s.last_event_screenshot_url;
+    const hasTrueStatusChange =
+      !!s.change_from_state ||
+      !!s.change_to_state ||
+      s.change_from_status_code !== undefined ||
+      s.change_to_status_code !== undefined ||
+      !!s.last_state_change_at ||
+      !!s.last_event_screenshot_url;
 
-    if (hasRecentIssues || hasDaily || hasEvent) {
+    if (hasRecentIssues || hasDaily || hasEvent || hasTrueStatusChange) {
       const details = document.createElement("details");
       details.className = "card-details";
 
@@ -127,6 +143,44 @@ async function load() {
 
       const detailsInner = document.createElement("div");
       detailsInner.className = "card-details-inner";
+
+      // True last recorded status change section at the top
+      if (hasTrueStatusChange) {
+        const changeBlock = document.createElement("div");
+        changeBlock.className = "details-block";
+
+        const changeTitle = document.createElement("div");
+        changeTitle.className = "details-title";
+        changeTitle.textContent = "Status change";
+        changeBlock.appendChild(changeTitle);
+
+        const changeCard = document.createElement("div");
+        changeCard.className = "details-change-card";
+
+        const fromState = s.change_from_state || "-";
+        const toState = s.change_to_state || "-";
+        const fromCode = formatStatusCode(s.change_from_status_code);
+        const toCode = formatStatusCode(s.change_to_status_code);
+        const changedAt = s.last_state_change_at || "-";
+
+        changeCard.innerHTML = `
+          <div class="details-change-row">
+            <span class="details-change-label">State</span>
+            <span class="details-change-value">${fromState} → ${toState}</span>
+          </div>
+          <div class="details-change-row">
+            <span class="details-change-label">Status code</span>
+            <span class="details-change-value">${fromCode} → ${toCode}</span>
+          </div>
+          <div class="details-change-row">
+            <span class="details-change-label">Recorded</span>
+            <span class="details-change-value">${changedAt}</span>
+          </div>
+        `;
+
+        changeBlock.appendChild(changeCard);
+        detailsInner.appendChild(changeBlock);
+      }
 
       if (hasRecentIssues) {
         const issuesBlock = document.createElement("div");
@@ -212,6 +266,29 @@ async function load() {
     card.appendChild(body);
     list.appendChild(card);
   }
+}
+
+function formatStatusCode(value) {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  return String(value);
+}
+
+function isRecentStatusChange(isoString) {
+  if (!isoString) {
+    return false;
+  }
+
+  const changedAt = new Date(isoString);
+  if (Number.isNaN(changedAt.getTime())) {
+    return false;
+  }
+
+  const ageMs = Date.now() - changedAt.getTime();
+  const maxAgeMs = CHANGED_PILL_WINDOW_HOURS * 60 * 60 * 1000;
+
+  return ageMs >= 0 && ageMs <= maxAgeMs;
 }
 
 function makeDetailShotCard(label, url, siteName, endpointId) {
