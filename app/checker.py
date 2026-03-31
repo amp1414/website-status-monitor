@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import pandas as pd
@@ -107,15 +108,84 @@ def classify_error(exc: Exception) -> str:
     return exc.__class__.__name__.lower()
 
 
-def classify_http_status(code: int) -> str:
-    # Boss requirement:
+def strip_default_port(netloc: str) -> str:
+    netloc = (netloc or "").strip().lower()
+    if netloc.endswith(":80"):
+        return netloc[:-3]
+    if netloc.endswith(":443"):
+        return netloc[:-4]
+    return netloc
+
+
+def strip_www(host: str) -> str:
+    host = (host or "").strip().lower()
+    if host.startswith("www."):
+        return host[4:]
+    return host
+
+
+def normalize_path(path: str) -> str:
+    path = (path or "").strip()
+    return path if path else "/"
+
+
+def is_www_only_redirect(from_url: str, location: str) -> bool:
+    if not location:
+        return False
+
+    try:
+        target_url = urljoin(from_url, location)
+
+        src = urlparse(from_url)
+        dst = urlparse(target_url)
+
+        src_host = strip_default_port(src.netloc)
+        dst_host = strip_default_port(dst.netloc)
+
+        if not src_host or not dst_host:
+            return False
+
+        src_base = strip_www(src_host)
+        dst_base = strip_www(dst_host)
+
+        # Same underlying domain after removing www.
+        if src_base != dst_base:
+            return False
+
+        # Must actually change between www and non-www.
+        if src_host == dst_host:
+            return False
+
+        src_is_www = src_host.startswith("www.")
+        dst_is_www = dst_host.startswith("www.")
+
+        if src_is_www == dst_is_www:
+            return False
+
+        # Keep meaningful path redirects as REVIEW.
+        if normalize_path(src.path) != normalize_path(dst.path):
+            return False
+
+        return True
+
+    except Exception:
+        return False
+
+
+def classify_http_result(code: int, from_url: str, location: str) -> str:
+    # Required behavior:
     # - 200 => UP
-    # - 3xx => REVIEW (yellow)
+    # - 3xx => UP only if redirect is just www <-> non-www
+    # - other 3xx => REVIEW
     # - everything else => DOWN
     if code == 200:
         return "UP"
+
     if 300 <= code <= 399:
+        if is_www_only_redirect(from_url, location):
+            return "UP"
         return "REVIEW"
+
     return "DOWN"
 
 
@@ -128,7 +198,7 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
     for attempt in range(1, RETRIES + 1):
         t0 = time.perf_counter()
         try:
-            # IMPORTANT: do NOT follow redirects so we can mark 3xx as REVIEW
+            # IMPORTANT: do NOT follow redirects so we can inspect raw 3xx responses
             resp = client.request(ep.method, ep.url, follow_redirects=False)
             dt_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -137,7 +207,8 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
             last_error_type = ""
             last_error_detail = ""
 
-            state = classify_http_status(resp.status_code)
+            location = resp.headers.get("location", "")
+            state = classify_http_result(resp.status_code, ep.url, location)
             slow = dt_ms > ep.slow_ms
 
             # UP or REVIEW are final (no retry)
@@ -146,7 +217,7 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
                     "state": state,
                     "status_code": resp.status_code,
                     "error_type": "" if state == "UP" else f"http_{resp.status_code}",
-                    "error_detail": "",
+                    "error_detail": "" if state == "UP" else f"Redirect target: {location}",
                     "latency_ms": dt_ms,
                     "attempts": attempt,
                     "slow": 1 if slow else 0,
@@ -197,7 +268,6 @@ def append_check_row(path: Path, ts_utc: str, site_id: int, endpoint_id: int, re
 
 
 def main() -> None:
-    
     site_name, endpoints = load_config(CONFIG_XLSX)
 
     if not endpoints:
