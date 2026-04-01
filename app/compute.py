@@ -112,6 +112,22 @@ def load_config(xlsx_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return sites_df, endpoints_df
 
 
+def filter_to_active_keys(df: pd.DataFrame, endpoints_df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    if endpoints_df.empty:
+        return df.iloc[0:0].copy()
+
+    active_keys = endpoints_df[["site_id", "endpoint_id"]].drop_duplicates().copy()
+
+    return df.merge(
+        active_keys,
+        on=["site_id", "endpoint_id"],
+        how="inner",
+    )
+
+
 def build_timeline(df_one: pd.DataFrame) -> list[dict]:
     if df_one.empty:
         return []
@@ -369,7 +385,6 @@ def compute_snapshot(
         new_state = str(row["state"])
         new_status_code = normalize_status_code(row.get("status_code"))
 
-        # Carry forward the last real recorded change info unless a new change happens now
         change_from_state = "" if not prev_item else str(prev_item.get("change_from_state", "") or "")
         change_from_status_code = "" if not prev_item else normalize_status_code(prev_item.get("change_from_status_code"))
         change_to_state = "" if not prev_item else str(prev_item.get("change_to_state", "") or "")
@@ -378,11 +393,9 @@ def compute_snapshot(
         last_state_change_at = "" if not prev_item else str(prev_item.get("last_state_change_at", "") or "")
         last_state_change_at_utc = "" if not prev_item else str(prev_item.get("last_state_change_at_utc", "") or "")
 
-        # Preserve compatibility fields too
         previous_state = "" if not prev_item else str(prev_item.get("previous_state", "") or "")
         previous_status_code = "" if not prev_item else normalize_status_code(prev_item.get("previous_status_code"))
 
-        # Only create/update event record when the main status actually changes
         if prev_current_state and prev_current_state != new_state:
             new_event_url = ensure_event_screenshot(
                 site_id,
@@ -401,7 +414,6 @@ def compute_snapshot(
             change_to_state = new_state
             change_to_status_code = new_status_code
 
-            # Keep compatibility fields aligned with the actual last change record
             previous_state = prev_current_state
             previous_status_code = prev_current_status_code
 
@@ -416,11 +428,9 @@ def compute_snapshot(
             "state": new_state,
             "status_code": new_status_code,
 
-            # Compatibility fields
             "previous_state": previous_state,
             "previous_status_code": previous_status_code,
 
-            # True last-change record
             "change_from_state": change_from_state,
             "change_from_status_code": change_from_status_code,
             "change_to_state": change_to_state,
@@ -494,6 +504,10 @@ def main() -> None:
     browser_df = load_browser_logs(browser_paths)
 
     sites_df, endpoints_df = load_config(CONFIG_XLSX)
+
+    df = filter_to_active_keys(df, endpoints_df)
+    browser_df = filter_to_active_keys(browser_df, endpoints_df)
+
     previous_snapshot = load_previous_snapshot()
 
     snapshot = compute_snapshot(
