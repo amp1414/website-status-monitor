@@ -16,11 +16,15 @@ CONFIG_XLSX = DATA_DIR / "sites.xlsx"
 
 WINDOW_DAYS = 7
 RETENTION_DAYS = 30
+LAST_24H_HOURS = 24
+FALLBACK_BROWSER_AUDIT_WINDOW_SECONDS = 15
 EASTERN = ZoneInfo("America/Toronto")
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def window_bounds_utc() -> tuple[datetime, datetime]:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=WINDOW_DAYS)
+    return start, end
 
 
 def last_n_days_paths(n_days: int) -> list[Path]:
@@ -77,6 +81,13 @@ def load_browser_logs(paths: list[Path]) -> pd.DataFrame:
     df["site_id"] = pd.to_numeric(df["site_id"], errors="coerce")
     df["endpoint_id"] = pd.to_numeric(df["endpoint_id"], errors="coerce")
 
+    if "audit_run_ts_utc" in df.columns:
+        df["audit_run_ts_utc"] = pd.to_datetime(
+            df["audit_run_ts_utc"], utc=True, errors="coerce"
+        )
+    else:
+        df["audit_run_ts_utc"] = pd.NaT
+
     for col in ["level", "message", "source", "exception_rule_id"]:
         if col not in df.columns:
             df[col] = ""
@@ -128,12 +139,25 @@ def filter_to_active_keys(df: pd.DataFrame, endpoints_df: pd.DataFrame) -> pd.Da
     )
 
 
+def append_timeline_segment(segments: list[dict], state: str, duration_seconds: int) -> None:
+    duration_seconds = max(0, int(duration_seconds))
+    if duration_seconds <= 0:
+        return
+
+    if segments and segments[-1]["state"] == state:
+        segments[-1]["duration_seconds"] += duration_seconds
+    else:
+        segments.append({
+            "state": state,
+            "duration_seconds": duration_seconds,
+        })
+
+
 def build_timeline(df_one: pd.DataFrame) -> list[dict]:
     if df_one.empty:
         return []
 
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=WINDOW_DAYS)
+    start, end = window_bounds_utc()
 
     df_one = df_one[
         (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
@@ -145,21 +169,24 @@ def build_timeline(df_one: pd.DataFrame) -> list[dict]:
     timestamps = df_one["ts_utc"].tolist()
     states = df_one["state"].astype(str).tolist()
 
-    segments = []
+    segments: list[dict] = []
+
+    first_ts = timestamps[0]
+    if first_ts > start:
+        append_timeline_segment(
+            segments,
+            "NO_DATA",
+            int((first_ts - start).total_seconds()),
+        )
 
     for i in range(len(timestamps)):
         t0 = timestamps[i]
         t1 = timestamps[i + 1] if i + 1 < len(timestamps) else end
-        duration = max(0, int((t1 - t0).total_seconds()))
-        state = states[i]
-
-        if segments and segments[-1]["state"] == state:
-            segments[-1]["duration_seconds"] += duration
-        else:
-            segments.append({
-                "state": state,
-                "duration_seconds": duration
-            })
+        append_timeline_segment(
+            segments,
+            states[i],
+            int((t1 - t0).total_seconds()),
+        )
 
     return segments
 
@@ -243,46 +270,96 @@ def ensure_event_screenshot(
         return ""
 
 
+def serialize_browser_issue_row(row) -> dict:
+    return {
+        "ts": format_eastern(row.get("ts_utc")),
+        "ts_utc": to_utc_iso(row.get("ts_utc")),
+        "level": "" if pd.isna(row.get("level")) else str(row.get("level")),
+        "message": "" if pd.isna(row.get("message")) else str(row.get("message")),
+        "source_url": "" if pd.isna(row.get("source")) else str(row.get("source")),
+        "line": "" if pd.isna(row.get("line")) else row.get("line"),
+        "column": "" if pd.isna(row.get("column")) else row.get("column"),
+        "is_exception": 0 if str(row.get("exception_rule_id", "")).strip() == "" else 1,
+        "exception_rule_id": "" if pd.isna(row.get("exception_rule_id")) else str(row.get("exception_rule_id")),
+    }
+
+
+def get_last_ping_browser_rows(df_group: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    if df_group.empty:
+        return df_group.copy(), ""
+
+    df_group = df_group.sort_values("ts_utc").copy()
+
+    grouped_rows = df_group[df_group["audit_run_ts_utc"].notna()].copy()
+    if not grouped_rows.empty:
+        latest_audit_run = grouped_rows["audit_run_ts_utc"].max()
+        last_ping_df = grouped_rows[
+            grouped_rows["audit_run_ts_utc"] == latest_audit_run
+        ].sort_values("ts_utc")
+        return last_ping_df, to_utc_iso(latest_audit_run)
+
+    latest_ts = df_group["ts_utc"].max()
+    if pd.isna(latest_ts):
+        return df_group.iloc[0:0].copy(), ""
+
+    floor_ts = latest_ts - timedelta(seconds=FALLBACK_BROWSER_AUDIT_WINDOW_SECONDS)
+    fallback_df = df_group[df_group["ts_utc"] >= floor_ts].sort_values("ts_utc").copy()
+
+    return fallback_df, to_utc_iso(latest_ts)
+
+
+def empty_browser_summary() -> dict:
+    return {
+        "console_status": "CLEAN",
+        "console_issue_count_last_ping": 0,
+        "console_ignored_count_last_ping": 0,
+        "console_issues_last_ping": [],
+        "console_issue_count_7d": 0,
+        "console_ignored_count_7d": 0,
+        "console_last_ping_at": "",
+        "console_last_ping_at_utc": "",
+    }
+
+
 def summarize_browser_group(df_group: pd.DataFrame) -> dict:
     if df_group.empty:
-        return {
-            "console_status": "CLEAN",
-            "console_issue_count": 0,
-            "console_ignored_count": 0,
-            "console_issues_recent": [],
-        }
+        return empty_browser_summary()
 
-    df_group = df_group.sort_values("ts_utc")
+    df_group = df_group.sort_values("ts_utc").copy()
 
-    issue_mask = df_group["exception_rule_id"].astype(str).str.strip() == ""
-    issues_df = df_group[issue_mask].copy()
-    ignored_df = df_group[~issue_mask].copy()
+    issue_mask_all = df_group["exception_rule_id"].astype(str).str.strip() == ""
+    issues_df_all = df_group[issue_mask_all].copy()
+    ignored_df_all = df_group[~issue_mask_all].copy()
 
-    recent = []
-    for _, row in issues_df.tail(5).iterrows():
-        recent.append({
-            "ts": format_eastern(row.get("ts_utc")),
-            "level": "" if pd.isna(row.get("level")) else str(row.get("level")),
-            "message": "" if pd.isna(row.get("message")) else str(row.get("message")),
-            "source_url": "" if pd.isna(row.get("source")) else str(row.get("source")),
-            "is_exception": 0,
-        })
+    last_ping_df, last_ping_at_utc = get_last_ping_browser_rows(df_group)
 
-    issue_count = len(issues_df)
-    ignored_count = len(ignored_df)
+    issue_mask_last_ping = last_ping_df["exception_rule_id"].astype(str).str.strip() == ""
+    issues_df_last_ping = last_ping_df[issue_mask_last_ping].copy()
+    ignored_df_last_ping = last_ping_df[~issue_mask_last_ping].copy()
 
-    if issue_count > 0:
+    issues_last_ping = []
+    for _, row in issues_df_last_ping.iterrows():
+        issues_last_ping.append(serialize_browser_issue_row(row))
+
+    issue_count_last_ping = len(issues_df_last_ping)
+    ignored_count_last_ping = len(ignored_df_last_ping)
+
+    if issue_count_last_ping > 0:
         status = "ISSUES"
-    elif ignored_count > 0:
+    elif ignored_count_last_ping > 0:
         status = "EXCEPTED"
     else:
         status = "CLEAN"
 
     return {
         "console_status": status,
-        "console_issue_count": int(issue_count),
-        "console_ignored_count": int(ignored_count),
-        "console_issues_recent": recent,
+        "console_issue_count_last_ping": int(issue_count_last_ping),
+        "console_ignored_count_last_ping": int(ignored_count_last_ping),
+        "console_issues_last_ping": issues_last_ping,
+        "console_issue_count_7d": int(len(issues_df_all)),
+        "console_ignored_count_7d": int(len(ignored_df_all)),
+        "console_last_ping_at": format_eastern(last_ping_at_utc) or "",
+        "console_last_ping_at_utc": last_ping_at_utc,
     }
 
 
@@ -295,6 +372,34 @@ def normalize_status_code(value):
         return ""
 
 
+def was_down_last_24h(df_one: pd.DataFrame) -> bool:
+    if df_one.empty:
+        return False
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=LAST_24H_HOURS)
+    recent = df_one[df_one["ts_utc"] >= cutoff].copy()
+    if recent.empty:
+        return False
+
+    return bool(recent["state"].astype(str).eq("DOWN").any())
+
+
+def get_tracking_since(df_one: pd.DataFrame) -> tuple[str, str]:
+    if df_one.empty:
+        return "", ""
+
+    start, end = window_bounds_utc()
+    df_one = df_one[
+        (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
+    ].sort_values("ts_utc")
+
+    if df_one.empty:
+        return "", ""
+
+    first_ts = df_one["ts_utc"].iloc[0]
+    return format_eastern(first_ts) or "", to_utc_iso(first_ts)
+
+
 def compute_snapshot(
     df: pd.DataFrame,
     sites_df: pd.DataFrame,
@@ -302,8 +407,11 @@ def compute_snapshot(
     browser_df: pd.DataFrame,
     previous_snapshot: dict,
 ) -> dict:
+    now_utc = datetime.now(timezone.utc)
+
     snapshot = {
-        "generated_at": format_eastern(datetime.now(timezone.utc)),
+        "generated_at": format_eastern(now_utc),
+        "generated_at_utc": to_utc_iso(now_utc),
         "window_days": WINDOW_DAYS,
         "sites": [],
     }
@@ -361,16 +469,17 @@ def compute_snapshot(
         endpoint_id = int(row["endpoint_id"])
         key = (site_id, endpoint_id)
 
+        endpoint_history = pd.DataFrame()
         timeline = []
-        if key in groups.groups:
-            timeline = build_timeline(groups.get_group(key))
+        tracking_since = ""
+        tracking_since_utc = ""
 
-        browser_summary = {
-            "console_status": "CLEAN",
-            "console_issue_count": 0,
-            "console_ignored_count": 0,
-            "console_issues_recent": [],
-        }
+        if key in groups.groups:
+            endpoint_history = groups.get_group(key).copy()
+            timeline = build_timeline(endpoint_history)
+            tracking_since, tracking_since_utc = get_tracking_since(endpoint_history)
+
+        browser_summary = empty_browser_summary()
         if key in browser_groups:
             browser_summary = summarize_browser_group(browser_groups[key])
 
@@ -393,9 +502,6 @@ def compute_snapshot(
         last_state_change_at = "" if not prev_item else str(prev_item.get("last_state_change_at", "") or "")
         last_state_change_at_utc = "" if not prev_item else str(prev_item.get("last_state_change_at_utc", "") or "")
 
-        previous_state = "" if not prev_item else str(prev_item.get("previous_state", "") or "")
-        previous_status_code = "" if not prev_item else normalize_status_code(prev_item.get("previous_status_code"))
-
         if prev_current_state and prev_current_state != new_state:
             new_event_url = ensure_event_screenshot(
                 site_id,
@@ -414,8 +520,14 @@ def compute_snapshot(
             change_to_state = new_state
             change_to_status_code = new_status_code
 
-            previous_state = prev_current_state
-            previous_status_code = prev_current_status_code
+        has_status_change_record = any([
+            bool(change_from_state),
+            bool(change_to_state),
+            change_from_status_code != "",
+            change_to_status_code != "",
+            bool(last_state_change_at),
+            bool(last_event_screenshot_url),
+        ])
 
         item = {
             "site_id": site_id,
@@ -428,13 +540,11 @@ def compute_snapshot(
             "state": new_state,
             "status_code": new_status_code,
 
-            "previous_state": previous_state,
-            "previous_status_code": previous_status_code,
-
             "change_from_state": change_from_state,
             "change_from_status_code": change_from_status_code,
             "change_to_state": change_to_state,
             "change_to_status_code": change_to_status_code,
+            "has_status_change_record": has_status_change_record,
 
             "error_type": "" if pd.isna(row.get("error_type")) else str(row.get("error_type")),
             "error_detail": "" if pd.isna(row.get("error_detail")) else str(row.get("error_detail")),
@@ -446,11 +556,18 @@ def compute_snapshot(
                 if pd.notna(row.get("uptime")) else None,
 
             "timeline_7d": timeline,
+            "tracking_since": tracking_since,
+            "tracking_since_utc": tracking_since_utc,
+            "was_down_last_24h": bool(was_down_last_24h(endpoint_history)),
 
             "console_status": browser_summary["console_status"],
-            "console_issue_count": browser_summary["console_issue_count"],
-            "console_ignored_count": browser_summary["console_ignored_count"],
-            "console_issues_recent": browser_summary["console_issues_recent"],
+            "console_issue_count_last_ping": browser_summary["console_issue_count_last_ping"],
+            "console_ignored_count_last_ping": browser_summary["console_ignored_count_last_ping"],
+            "console_issues_last_ping": browser_summary["console_issues_last_ping"],
+            "console_issue_count_7d": browser_summary["console_issue_count_7d"],
+            "console_ignored_count_7d": browser_summary["console_ignored_count_7d"],
+            "console_last_ping_at": browser_summary["console_last_ping_at"],
+            "console_last_ping_at_utc": browser_summary["console_last_ping_at_utc"],
 
             "daily_screenshot_url": daily_url,
             "last_event_screenshot_url": last_event_screenshot_url,
