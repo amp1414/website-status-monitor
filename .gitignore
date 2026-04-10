@@ -5,3 +5,5 @@ __pycache__/
 create_excel.py
 excel_editor_v2.py
 excel_editor.py
+data/*
+!data/sites.xlsx

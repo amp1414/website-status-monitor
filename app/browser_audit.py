@@ -17,6 +17,20 @@ DATA_DIR = BASE_DIR / "data"
 BROWSER_LOGS_DIR = DATA_DIR / "browser_logs"
 SCREENSHOTS_DIR = DATA_DIR / "screenshots"
 
+BROWSER_LOG_COLUMNS = [
+    "ts_utc",
+    "audit_run_ts_utc",
+    "site_id",
+    "endpoint_id",
+    "url",
+    "level",
+    "message",
+    "source",
+    "line",
+    "column",
+    "exception_rule_id",
+]
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -26,28 +40,49 @@ def today_utc_str() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def ensure_browser_log_csv(path: Path) -> None:
-    BROWSER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-    if path.exists():
+def rewrite_browser_log_csv_with_expected_columns(path: Path) -> None:
+    if not path.exists():
         return
+
+    with path.open("r", newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+
+    if not rows:
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(BROWSER_LOG_COLUMNS)
+        return
+
+    header = rows[0]
+    data_rows = rows[1:]
+
+    if header == BROWSER_LOG_COLUMNS:
+        return
+
+    normalized_rows = []
+    header_len = len(header)
+
+    for row in data_rows:
+        padded = list(row) + [""] * max(0, header_len - len(row))
+        record = {header[i]: padded[i] for i in range(header_len)}
+        normalized_rows.append([record.get(col, "") for col in BROWSER_LOG_COLUMNS])
 
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(
-            [
-                "ts_utc",
-                "site_id",
-                "endpoint_id",
-                "url",
-                "level",
-                "message",
-                "source",
-                "line",
-                "column",
-                "exception_rule_id",
-            ]
-        )
+        w.writerow(BROWSER_LOG_COLUMNS)
+        w.writerows(normalized_rows)
+
+
+def ensure_browser_log_csv(path: Path) -> None:
+    BROWSER_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not path.exists():
+        with path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(BROWSER_LOG_COLUMNS)
+        return
+
+    rewrite_browser_log_csv_with_expected_columns(path)
 
 
 def browser_log_path_for_today() -> Path:
@@ -58,6 +93,7 @@ def append_browser_log_row(
     path: Path,
     *,
     ts_utc: str,
+    audit_run_ts_utc: str,
     site_id: int,
     endpoint_id: int,
     url: str,
@@ -73,6 +109,7 @@ def append_browser_log_row(
         w.writerow(
             [
                 ts_utc,
+                audit_run_ts_utc,
                 site_id,
                 endpoint_id,
                 url,
@@ -183,7 +220,7 @@ def daily_screenshot_path(site_id: int, endpoint_id: int) -> Path:
 
 
 async def audit_one_endpoint(browser, ep, rules: list[dict], csv_path: Path) -> None:
-    ts_utc = utc_now_iso()
+    audit_run_ts_utc = utc_now_iso()
 
     context = await browser.new_context()
     page = await context.new_page()
@@ -258,7 +295,8 @@ async def audit_one_endpoint(browser, ep, rules: list[dict], csv_path: Path) -> 
 
         append_browser_log_row(
             csv_path,
-            ts_utc=ts_utc,
+            ts_utc=utc_now_iso(),
+            audit_run_ts_utc=audit_run_ts_utc,
             site_id=ep.site_id,
             endpoint_id=ep.endpoint_id,
             url=ep.url,
@@ -287,6 +325,7 @@ async def audit_one_endpoint(browser, ep, rules: list[dict], csv_path: Path) -> 
         append_browser_log_row(
             csv_path,
             ts_utc=utc_now_iso(),
+            audit_run_ts_utc=audit_run_ts_utc,
             site_id=ep.site_id,
             endpoint_id=ep.endpoint_id,
             url=ep.url,
@@ -327,9 +366,11 @@ async def _amain() -> None:
                     f"[browser] endpoint {ep.endpoint_id} site {ep.site_id}: audited"
                 )
             except Exception as e:
+                audit_run_ts_utc = utc_now_iso()
                 append_browser_log_row(
                     csv_path,
                     ts_utc=utc_now_iso(),
+                    audit_run_ts_utc=audit_run_ts_utc,
                     site_id=ep.site_id,
                     endpoint_id=ep.endpoint_id,
                     url=ep.url,
