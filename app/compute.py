@@ -31,7 +31,7 @@ def last_n_days_paths(n_days: int) -> list[Path]:
     today = datetime.now(timezone.utc).date()
     return [
         LOGS_DIR / f"{(today - timedelta(days=i)).isoformat()}.csv"
-        for i in range(n_days)
+        for i in range(n_days + 1)
     ]
 
 
@@ -39,7 +39,7 @@ def last_n_browser_log_paths(n_days: int) -> list[Path]:
     today = datetime.now(timezone.utc).date()
     return [
         BROWSER_LOGS_DIR / f"{(today - timedelta(days=i)).isoformat()}.csv"
-        for i in range(n_days)
+        for i in range(n_days + 1)
     ]
 
 
@@ -160,24 +160,42 @@ def build_timeline(df_one: pd.DataFrame) -> list[dict]:
     start, end = window_bounds_utc()
 
     df_one = df_one[
-        (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
-    ].sort_values("ts_utc")
+        df_one["ts_utc"].notna() & (df_one["ts_utc"] <= end)
+    ].sort_values("ts_utc").copy()
 
     if df_one.empty:
         return []
 
-    timestamps = df_one["ts_utc"].tolist()
-    states = df_one["state"].astype(str).tolist()
+    window_df = df_one[
+        (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
+    ].sort_values("ts_utc").copy()
+
+    if window_df.empty:
+        return []
 
     segments: list[dict] = []
 
-    first_ts = timestamps[0]
-    if first_ts > start:
+    first_seen_ts = df_one["ts_utc"].iloc[0]
+    first_in_window_ts = window_df["ts_utc"].iloc[0]
+
+    if first_seen_ts > start:
         append_timeline_segment(
             segments,
             "NO_DATA",
-            int((first_ts - start).total_seconds()),
+            int((first_in_window_ts - start).total_seconds()),
         )
+    else:
+        prior_rows = df_one[df_one["ts_utc"] <= start].sort_values("ts_utc")
+        if not prior_rows.empty:
+            carried_state = str(prior_rows.iloc[-1]["state"])
+            append_timeline_segment(
+                segments,
+                carried_state,
+                int((first_in_window_ts - start).total_seconds()),
+            )
+
+    timestamps = window_df["ts_utc"].tolist()
+    states = window_df["state"].astype(str).tolist()
 
     for i in range(len(timestamps)):
         t0 = timestamps[i]
@@ -325,7 +343,14 @@ def summarize_browser_group(df_group: pd.DataFrame) -> dict:
     if df_group.empty:
         return empty_browser_summary()
 
-    df_group = df_group.sort_values("ts_utc").copy()
+    start, end = window_bounds_utc()
+
+    df_group = df_group[
+        df_group["ts_utc"].notna() & (df_group["ts_utc"] >= start) & (df_group["ts_utc"] <= end)
+    ].sort_values("ts_utc").copy()
+
+    if df_group.empty:
+        return empty_browser_summary()
 
     issue_mask_all = df_group["exception_rule_id"].astype(str).str.strip() == ""
     issues_df_all = df_group[issue_mask_all].copy()
@@ -389,15 +414,18 @@ def get_tracking_since(df_one: pd.DataFrame) -> tuple[str, str]:
         return "", ""
 
     start, end = window_bounds_utc()
+
     df_one = df_one[
-        (df_one["ts_utc"] >= start) & (df_one["ts_utc"] <= end)
-    ].sort_values("ts_utc")
+        df_one["ts_utc"].notna() & (df_one["ts_utc"] <= end)
+    ].sort_values("ts_utc").copy()
 
     if df_one.empty:
         return "", ""
 
-    first_ts = df_one["ts_utc"].iloc[0]
-    return format_eastern(first_ts) or "", to_utc_iso(first_ts)
+    first_seen_ts = df_one["ts_utc"].iloc[0]
+    tracking_since_ts = first_seen_ts if first_seen_ts > start else start
+
+    return format_eastern(tracking_since_ts) or "", to_utc_iso(tracking_since_ts)
 
 
 def compute_snapshot(
@@ -408,6 +436,7 @@ def compute_snapshot(
     previous_snapshot: dict,
 ) -> dict:
     now_utc = datetime.now(timezone.utc)
+    start_utc, end_utc = window_bounds_utc()
 
     snapshot = {
         "generated_at": format_eastern(now_utc),
@@ -419,13 +448,20 @@ def compute_snapshot(
     if df.empty:
         return snapshot
 
-    df = df.sort_values("ts_utc").copy()
+    df = df[df["ts_utc"].notna()].sort_values("ts_utc").copy()
 
-    latest = df.groupby(["site_id", "endpoint_id"], dropna=False).tail(1).copy()
+    df_window = df[
+        (df["ts_utc"] >= start_utc) & (df["ts_utc"] <= end_utc)
+    ].sort_values("ts_utc").copy()
 
-    df["is_success"] = df["state"].isin(["UP", "REVIEW"])
+    if df_window.empty:
+        return snapshot
+
+    latest = df_window.groupby(["site_id", "endpoint_id"], dropna=False).tail(1).copy()
+
+    df_window["is_success"] = df_window["state"].isin(["UP", "REVIEW"])
     uptime = (
-        df.groupby(["site_id", "endpoint_id"])["is_success"]
+        df_window.groupby(["site_id", "endpoint_id"])["is_success"]
         .mean()
         .reset_index()
         .rename(columns={"is_success": "uptime"})
@@ -446,7 +482,7 @@ def compute_snapshot(
         ep_meta, on=["site_id", "endpoint_id"], how="left"
     )
 
-    groups = df.groupby(["site_id", "endpoint_id"])
+    groups_all = df.groupby(["site_id", "endpoint_id"])
 
     browser_groups = {}
     if not browser_df.empty:
@@ -474,8 +510,8 @@ def compute_snapshot(
         tracking_since = ""
         tracking_since_utc = ""
 
-        if key in groups.groups:
-            endpoint_history = groups.get_group(key).copy()
+        if key in groups_all.groups:
+            endpoint_history = groups_all.get_group(key).copy()
             timeline = build_timeline(endpoint_history)
             tracking_since, tracking_since_utc = get_tracking_since(endpoint_history)
 

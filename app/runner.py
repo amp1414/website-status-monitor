@@ -4,6 +4,7 @@ from datetime import datetime
 from app.checker import main as run_checker
 from app.browser_audit import main as run_browser_audit
 from app.compute import main as run_compute
+from app.alerts import main as run_alerts
 
 INTERVAL_SECONDS = 3600  # hourly
 
@@ -27,6 +28,11 @@ def main():
             run_compute()
         except Exception as e:
             print("Compute failed:", repr(e))
+
+        try:
+            run_alerts()
+        except Exception as e:
+            print("Alerts failed:", repr(e))
 
         time.sleep(INTERVAL_SECONDS)
 
