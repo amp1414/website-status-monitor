@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from playwright.async_api import async_playwright
 
-from app.checker import CONFIG_XLSX, load_config
+from app.checker import CONFIG_XLSX, Endpoint, load_config
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -219,7 +219,7 @@ def daily_screenshot_path(site_id: int, endpoint_id: int) -> Path:
     return out_dir / f"{day}_endpoint_{endpoint_id}.png"
 
 
-async def audit_one_endpoint(browser, ep, rules: list[dict], csv_path: Path) -> None:
+async def audit_one_endpoint(browser, ep: Endpoint, rules: list[dict], csv_path: Path) -> None:
     audit_run_ts_utc = utc_now_iso()
 
     context = await browser.new_context()
@@ -340,11 +340,19 @@ async def audit_one_endpoint(browser, ep, rules: list[dict], csv_path: Path) -> 
     await context.close()
 
 
-async def _amain() -> None:
+def resolve_endpoints_for_cycle(checked_endpoints: list[Endpoint] | None) -> list[Endpoint]:
+    if checked_endpoints is not None:
+        return checked_endpoints
+
     _, endpoints = load_config(CONFIG_XLSX)
+    return endpoints
+
+
+async def _amain(checked_endpoints: list[Endpoint] | None = None) -> None:
+    endpoints = resolve_endpoints_for_cycle(checked_endpoints)
 
     if not endpoints:
-        print("No endpoints to browser-audit.")
+        print("No endpoints to browser-audit this cycle.")
         return
 
     csv_path = browser_log_path_for_today()
@@ -354,7 +362,7 @@ async def _amain() -> None:
 
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Running browser audit for {len(endpoints)} endpoints ...")
+    print(f"Running browser audit for {len(endpoints)} endpoint(s) ...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -390,8 +398,8 @@ async def _amain() -> None:
     print(f"Browser audit done. Appended to {csv_path}")
 
 
-def main() -> None:
-    asyncio.run(_amain())
+def main(checked_endpoints: list[Endpoint] | None = None) -> None:
+    asyncio.run(_amain(checked_endpoints))
 
 
 if __name__ == "__main__":

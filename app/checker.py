@@ -11,15 +11,27 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import pandas as pd
 
+from app.check_schedule import (
+    build_next_entry,
+    get_entry,
+    is_due,
+    load_schedule_state,
+    set_entry,
+    utc_now,
+    write_schedule_state,
+)
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 CONFIG_XLSX = DATA_DIR / "sites.xlsx"
 LOGS_DIR = DATA_DIR / "logs"
 
+
 def log_path_for_ts(ts_utc: str) -> Path:
     # ts_utc like "2026-03-02T04:21:30+00:00" -> date "2026-03-02"
     day = ts_utc[:10]
     return LOGS_DIR / f"{day}.csv"
+
 
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_SLOW_MS = 2000
@@ -73,7 +85,6 @@ def load_config(xlsx_path: Path) -> tuple[dict[int, str], list[Endpoint]]:
 
     site_name = {int(r["site_id"]): str(r["name"]) for _, r in sites_df.iterrows()}
 
-    # Fill defaults if missing
     if "method" in endpoints_df.columns:
         endpoints_df["method"] = endpoints_df["method"].fillna("GET")
     if "slow_ms" in endpoints_df.columns:
@@ -92,6 +103,25 @@ def load_config(xlsx_path: Path) -> tuple[dict[int, str], list[Endpoint]]:
         )
 
     return site_name, endpoints
+
+
+def select_due_endpoints(
+    endpoints: list[Endpoint],
+    schedule_state: dict,
+) -> list[Endpoint]:
+    now_utc = utc_now()
+    due_endpoints: list[Endpoint] = []
+
+    for ep in endpoints:
+        entry = get_entry(
+            schedule_state,
+            site_id=ep.site_id,
+            endpoint_id=ep.endpoint_id,
+        )
+        if is_due(entry, now_utc):
+            due_endpoints.append(ep)
+
+    return due_endpoints
 
 
 def classify_error(exc: Exception) -> str:
@@ -148,11 +178,9 @@ def is_www_only_redirect(from_url: str, location: str) -> bool:
         src_base = strip_www(src_host)
         dst_base = strip_www(dst_host)
 
-        # Same underlying domain after removing www.
         if src_base != dst_base:
             return False
 
-        # Must actually change between www and non-www.
         if src_host == dst_host:
             return False
 
@@ -162,7 +190,6 @@ def is_www_only_redirect(from_url: str, location: str) -> bool:
         if src_is_www == dst_is_www:
             return False
 
-        # Keep meaningful path redirects as REVIEW.
         if normalize_path(src.path) != normalize_path(dst.path):
             return False
 
@@ -173,11 +200,6 @@ def is_www_only_redirect(from_url: str, location: str) -> bool:
 
 
 def classify_http_result(code: int, from_url: str, location: str) -> str:
-    # Required behavior:
-    # - 200 => UP
-    # - 3xx => UP only if redirect is just www <-> non-www
-    # - other 3xx => REVIEW
-    # - everything else => DOWN
     if code == 200:
         return "UP"
 
@@ -198,7 +220,6 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
     for attempt in range(1, RETRIES + 1):
         t0 = time.perf_counter()
         try:
-            # IMPORTANT: do NOT follow redirects so we can inspect raw 3xx responses
             resp = client.request(ep.method, ep.url, follow_redirects=False)
             dt_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -211,7 +232,6 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
             state = classify_http_result(resp.status_code, ep.url, location)
             slow = dt_ms > ep.slow_ms
 
-            # UP or REVIEW are final (no retry)
             if state in ("UP", "REVIEW"):
                 return {
                     "state": state,
@@ -223,7 +243,6 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
                     "slow": 1 if slow else 0,
                 }
 
-            # DOWN (retry)
             last_error_type = f"http_{resp.status_code}"
             last_error_detail = ""
 
@@ -236,7 +255,6 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
         if attempt < RETRIES:
             time.sleep(1.0)
 
-    # After retries -> DOWN
     return {
         "state": "DOWN",
         "status_code": last_status if last_status is not None else "",
@@ -267,17 +285,24 @@ def append_check_row(path: Path, ts_utc: str, site_id: int, endpoint_id: int, re
         )
 
 
-def main() -> None:
+def main() -> list[Endpoint]:
     site_name, endpoints = load_config(CONFIG_XLSX)
 
     if not endpoints:
         print("No endpoints to check (are sites enabled in sites.xlsx?).")
-        return
+        return []
 
-    ts_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    print(f"Running checks at {ts_utc} (UTC) ...")
-    daily_csv = log_path_for_ts(ts_utc)
-    ensure_checks_csv(daily_csv)
+    schedule_state = load_schedule_state()
+    due_endpoints = select_due_endpoints(endpoints, schedule_state)
+
+    now_utc = utc_now().isoformat(timespec="seconds")
+    print(
+        f"Checker poll at {now_utc} (UTC) — due now: {len(due_endpoints)} / {len(endpoints)} endpoints"
+    )
+
+    if not due_endpoints:
+        print("No endpoints due right now.")
+        return []
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SiteMonitor/0.1",
@@ -286,26 +311,48 @@ def main() -> None:
         "Connection": "close",
     }
 
+    checked_endpoints: list[Endpoint] = []
+
     with httpx.Client(
         timeout=DEFAULT_TIMEOUT_SECONDS,
         headers=headers,
         http2=False,
         trust_env=False,
     ) as client:
-        for ep in endpoints:
+        for ep in due_endpoints:
             res = check_endpoint(client, ep)
-            append_check_row(daily_csv, ts_utc, ep.site_id, ep.endpoint_id, res)
+            checked_at_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            daily_csv = log_path_for_ts(checked_at_utc)
+            ensure_checks_csv(daily_csv)
+            append_check_row(daily_csv, checked_at_utc, ep.site_id, ep.endpoint_id, res)
+
+            set_entry(
+                schedule_state,
+                site_id=ep.site_id,
+                endpoint_id=ep.endpoint_id,
+                entry=build_next_entry(
+                    current_state=res["state"],
+                    checked_at_utc=checked_at_utc,
+                ),
+            )
+
+            checked_endpoints.append(ep)
 
             code_txt = res["status_code"] if res["status_code"] != "" else "-"
             err_txt = res["error_type"] if res["error_type"] else "-"
             print(
                 f"[{site_name.get(ep.site_id, str(ep.site_id))}] endpoint {ep.endpoint_id}: "
-                f"{res['state']} code={code_txt} err={err_txt} ms={res['latency_ms']} attempts={res['attempts']}"
+                f"{res['state']} code={code_txt} err={err_txt} ms={res['latency_ms']} "
+                f"attempts={res['attempts']} next_interval={'30m' if res['state'] == 'DOWN' else '60m'}"
             )
             if res["error_detail"]:
                 print(f"  detail: {res['error_detail']}")
 
-    print(f"Done. Appended to {daily_csv}")
+    write_schedule_state(schedule_state)
+
+    print(f"Checker done. Checked {len(checked_endpoints)} endpoint(s).")
+    return checked_endpoints
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from app.browser_audit import main as run_browser_audit
 from app.compute import main as run_compute
 from app.alerts import main as run_alerts
 
-INTERVAL_SECONDS = 3600  # hourly
+INTERVAL_SECONDS = 300  # poll every 5 minutes
 
 
 def main():
@@ -14,13 +14,16 @@ def main():
     while True:
         print("\n---", datetime.now().isoformat(timespec="seconds"), "---")
 
-        try:
-            run_checker()
-        except Exception as e:
-            print("Checker failed:", repr(e))
+        checked_endpoints = []
 
         try:
-            run_browser_audit()
+            checked_endpoints = run_checker() or []
+        except Exception as e:
+            print("Checker failed:", repr(e))
+            checked_endpoints = []
+
+        try:
+            run_browser_audit(checked_endpoints)
         except Exception as e:
             print("Browser audit failed:", repr(e))
 
