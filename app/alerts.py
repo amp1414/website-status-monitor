@@ -19,6 +19,15 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def parse_utc_iso(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
 def load_json(path: Path, default):
     if not path.exists():
         return default
@@ -55,6 +64,29 @@ def parse_recipients(value: str) -> list[str]:
 
 def make_site_key(site: dict) -> str:
     return f"{site.get('site_id')}:{site.get('endpoint_id')}"
+
+
+def format_duration_seconds(total_seconds: int) -> str:
+    total_seconds = max(0, int(total_seconds))
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    if minutes > 0:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def format_downtime(start_iso: str | None, end_iso: str | None) -> str:
+    start_dt = parse_utc_iso(start_iso)
+    end_dt = parse_utc_iso(end_iso)
+
+    if start_dt is None or end_dt is None:
+        return "Unavailable"
+
+    return format_duration_seconds(int((end_dt - start_dt).total_seconds()))
 
 
 def build_down_subject(down_sites: list[dict]) -> str:
@@ -96,6 +128,11 @@ def build_recovery_text_body(recovered_sites: list[dict], dashboard_url: str) ->
     lines.append("")
 
     for site in recovered_sites:
+        downtime_text = format_downtime(
+            site.get("down_started_at_utc"),
+            site.get("recovered_at_utc"),
+        )
+
         lines.append(f"Site: {site.get('site_name', '-')}")
         lines.append(f"Endpoint ID: {site.get('endpoint_id', '-')}")
         lines.append(f"URL: {site.get('url', '-')}")
@@ -103,6 +140,7 @@ def build_recovery_text_body(recovered_sites: list[dict], dashboard_url: str) ->
         lines.append(f"Status code: {site.get('status_code', '-') or '-'}")
         lines.append(f"Last checked: {site.get('last_checked', '-')}")
         lines.append(f"Tracking since: {site.get('tracking_since', '-')}")
+        lines.append(f"Downtime: {downtime_text}")
         lines.append("")
 
     lines.append(f"Dashboard: {dashboard_url}")
@@ -131,6 +169,12 @@ def send_sendgrid_email(
                 "value": text_body,
             }
         ],
+        "tracking_settings": {
+            "click_tracking": {
+                "enable": False,
+                "enable_text": False,
+            }
+        },
     }
 
     headers = {
@@ -155,19 +199,41 @@ def collect_alert_changes(snapshot: dict, alerts_state: dict) -> tuple[list[dict
 
     for site in snapshot.get("sites", []):
         key = make_site_key(site)
+        existing = next_state.get(key, {})
         current_state = str(site.get("state", "")).strip().upper()
-        previous_state = str(next_state.get(key, {}).get("last_seen_state", "")).strip().upper()
+        previous_state = str(existing.get("last_seen_state", "")).strip().upper()
+        down_started_at = existing.get("down_started_at")
 
-        if current_state == "DOWN" and previous_state != "DOWN":
-            new_down_sites.append(site)
+        if current_state == "DOWN":
+            if previous_state != "DOWN":
+                down_started_at = observed_at
+                new_down_sites.append(
+                    {
+                        **site,
+                        "down_started_at_utc": down_started_at,
+                    }
+                )
+
+            next_state[key] = {
+                **existing,
+                "last_seen_state": "DOWN",
+                "last_seen_at": observed_at,
+                "down_started_at": down_started_at or observed_at,
+            }
             continue
 
         if previous_state == "DOWN" and current_state in ("UP", "REVIEW"):
-            recovered_sites.append(site)
+            recovered_sites.append(
+                {
+                    **site,
+                    "down_started_at_utc": down_started_at,
+                    "recovered_at_utc": observed_at,
+                }
+            )
             continue
 
         next_state[key] = {
-            **next_state.get(key, {}),
+            **existing,
             "last_seen_state": current_state,
             "last_seen_at": observed_at,
         }
@@ -180,10 +246,14 @@ def apply_down_success(next_state: dict, down_sites: list[dict], subject: str) -
 
     for site in down_sites:
         key = make_site_key(site)
+        existing = next_state.get(key, {})
+        down_started_at = site.get("down_started_at_utc") or existing.get("down_started_at") or now
+
         next_state[key] = {
-            **next_state.get(key, {}),
+            **existing,
             "last_seen_state": "DOWN",
             "last_seen_at": now,
+            "down_started_at": down_started_at,
             "last_alerted_down_at": now,
             "last_alert_subject": subject,
         }
@@ -196,13 +266,15 @@ def apply_recovery_success(next_state: dict, recovered_sites: list[dict], subjec
         key = make_site_key(site)
         current_state = str(site.get("state", "")).strip().upper()
 
-        next_state[key] = {
+        entry = {
             **next_state.get(key, {}),
             "last_seen_state": current_state,
             "last_seen_at": now,
             "last_alerted_recovery_at": now,
             "last_alert_subject": subject,
         }
+        entry.pop("down_started_at", None)
+        next_state[key] = entry
 
 
 def main() -> None:
