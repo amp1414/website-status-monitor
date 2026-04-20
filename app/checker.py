@@ -26,16 +26,17 @@ DATA_DIR = BASE_DIR / "data"
 CONFIG_XLSX = DATA_DIR / "sites.xlsx"
 LOGS_DIR = DATA_DIR / "logs"
 
-
-def log_path_for_ts(ts_utc: str) -> Path:
-    # ts_utc like "2026-03-02T04:21:30+00:00" -> date "2026-03-02"
-    day = ts_utc[:10]
-    return LOGS_DIR / f"{day}.csv"
-
-
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_SLOW_MS = 2000
-RETRIES = 3  # 3 failed attempts => DOWN
+RETRIES = 3  # normal short retries
+
+OFFICE_CONFIRM_ENDPOINT_ID = 26
+OFFICE_CONFIRM_WAIT_SECONDS = 60
+
+
+def log_path_for_ts(ts_utc: str) -> Path:
+    day = ts_utc[:10]
+    return LOGS_DIR / f"{day}.csv"
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def ensure_checks_csv(path: Path) -> None:
                 "ts_utc",
                 "site_id",
                 "endpoint_id",
-                "state",         # UP / REVIEW / DOWN
+                "state",
                 "status_code",
                 "error_type",
                 "error_detail",
@@ -211,59 +212,119 @@ def classify_http_result(code: int, from_url: str, location: str) -> str:
     return "DOWN"
 
 
+def is_office_confirmation_target(ep: Endpoint) -> bool:
+    return ep.endpoint_id == OFFICE_CONFIRM_ENDPOINT_ID
+
+
+def perform_single_attempt(client: httpx.Client, ep: Endpoint) -> dict:
+    t0 = time.perf_counter()
+
+    try:
+        resp = client.request(ep.method, ep.url, follow_redirects=False)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+
+        location = resp.headers.get("location", "")
+        state = classify_http_result(resp.status_code, ep.url, location)
+        slow = dt_ms > ep.slow_ms
+
+        if state == "UP":
+            error_type = ""
+            error_detail = ""
+        elif state == "REVIEW":
+            error_type = f"http_{resp.status_code}"
+            error_detail = f"Redirect target: {location}"
+        else:
+            error_type = f"http_{resp.status_code}"
+            error_detail = ""
+
+        return {
+            "state": state,
+            "status_code": resp.status_code,
+            "error_type": error_type,
+            "error_detail": error_detail,
+            "latency_ms": dt_ms,
+            "slow": 1 if slow else 0,
+        }
+
+    except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        return {
+            "state": "DOWN",
+            "status_code": "",
+            "error_type": classify_error(e),
+            "error_detail": f"{e.__class__.__name__}: {e}",
+            "latency_ms": dt_ms,
+            "slow": 0,
+        }
+
+
+def should_accept_immediately(ep: Endpoint, result: dict) -> bool:
+    if is_office_confirmation_target(ep):
+        return result.get("status_code") == 200
+
+    return result.get("state") in ("UP", "REVIEW")
+
+
+def run_office_confirmation_retry(
+    client: httpx.Client,
+    ep: Endpoint,
+    initial_result: dict,
+) -> dict:
+    if initial_result.get("status_code") == 200:
+        return initial_result
+
+    print(
+        f"[confirm] endpoint {ep.endpoint_id}: non-200 after normal retries; "
+        f"waiting {OFFICE_CONFIRM_WAIT_SECONDS}s before one final confirmation"
+    )
+    time.sleep(OFFICE_CONFIRM_WAIT_SECONDS)
+
+    confirm_result = perform_single_attempt(client, ep)
+    total_attempts = int(initial_result.get("attempts", RETRIES)) + 1
+    confirm_result["attempts"] = total_attempts
+
+    if confirm_result.get("status_code") != 200:
+        note = f"Confirmed after {OFFICE_CONFIRM_WAIT_SECONDS}s retry"
+        if confirm_result.get("error_detail"):
+            confirm_result["error_detail"] = f"{confirm_result['error_detail']} | {note}"
+        else:
+            confirm_result["error_detail"] = note
+
+    return confirm_result
+
+
 def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
-    last_status: Optional[int] = None
-    last_error_type: str = ""
-    last_error_detail: str = ""
-    last_latency_ms: Optional[int] = None
+    last_result: Optional[dict] = None
 
     for attempt in range(1, RETRIES + 1):
-        t0 = time.perf_counter()
-        try:
-            resp = client.request(ep.method, ep.url, follow_redirects=False)
-            dt_ms = int((time.perf_counter() - t0) * 1000)
+        result = perform_single_attempt(client, ep)
+        last_result = result
 
-            last_status = resp.status_code
-            last_latency_ms = dt_ms
-            last_error_type = ""
-            last_error_detail = ""
-
-            location = resp.headers.get("location", "")
-            state = classify_http_result(resp.status_code, ep.url, location)
-            slow = dt_ms > ep.slow_ms
-
-            if state in ("UP", "REVIEW"):
-                return {
-                    "state": state,
-                    "status_code": resp.status_code,
-                    "error_type": "" if state == "UP" else f"http_{resp.status_code}",
-                    "error_detail": "" if state == "UP" else f"Redirect target: {location}",
-                    "latency_ms": dt_ms,
-                    "attempts": attempt,
-                    "slow": 1 if slow else 0,
-                }
-
-            last_error_type = f"http_{resp.status_code}"
-            last_error_detail = ""
-
-        except Exception as e:
-            dt_ms = int((time.perf_counter() - t0) * 1000)
-            last_latency_ms = dt_ms
-            last_error_type = classify_error(e)
-            last_error_detail = f"{e.__class__.__name__}: {e}"
+        if should_accept_immediately(ep, result):
+            return {
+                **result,
+                "attempts": attempt,
+            }
 
         if attempt < RETRIES:
             time.sleep(1.0)
 
-    return {
-        "state": "DOWN",
-        "status_code": last_status if last_status is not None else "",
-        "error_type": last_error_type or "unknown",
-        "error_detail": last_error_detail,
-        "latency_ms": last_latency_ms if last_latency_ms is not None else "",
+    final_result = {
+        **(last_result or {
+            "state": "DOWN",
+            "status_code": "",
+            "error_type": "unknown",
+            "error_detail": "",
+            "latency_ms": "",
+            "slow": 0,
+        }),
         "attempts": RETRIES,
-        "slow": 0,
     }
+
+    if is_office_confirmation_target(ep):
+        return run_office_confirmation_retry(client, ep, final_result)
+
+    return final_result
 
 
 def append_check_row(path: Path, ts_utc: str, site_id: int, endpoint_id: int, result: dict) -> None:
