@@ -19,15 +19,6 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def parse_utc_iso(value: str | None):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value))
-    except Exception:
-        return None
-
-
 def load_json(path: Path, default):
     if not path.exists():
         return default
@@ -66,39 +57,16 @@ def make_site_key(site: dict) -> str:
     return f"{site.get('site_id')}:{site.get('endpoint_id')}"
 
 
-def format_duration_seconds(total_seconds: int) -> str:
-    total_seconds = max(0, int(total_seconds))
-
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    if hours > 0:
-        return f"{hours}h {minutes}m"
-    if minutes > 0:
-        return f"{minutes}m {seconds}s"
-    return f"{seconds}s"
-
-
-def format_downtime(start_iso: str | None, end_iso: str | None) -> str:
-    start_dt = parse_utc_iso(start_iso)
-    end_dt = parse_utc_iso(end_iso)
-
-    if start_dt is None or end_dt is None:
-        return "Unavailable"
-
-    return format_duration_seconds(int((end_dt - start_dt).total_seconds()))
-
-
 def build_down_subject(down_sites: list[dict]) -> str:
     if len(down_sites) == 1:
-        return f"[Site Monitor] DOWN — {down_sites[0].get('site_name', 'Unknown site')}"
-    return f"[Site Monitor] DOWN — {len(down_sites)} websites"
+        return f"[Site Monitor] DOWN - {down_sites[0].get('site_name', 'Unknown site')}"
+    return f"[Site Monitor] DOWN - {len(down_sites)} websites"
 
 
 def build_recovery_subject(recovered_sites: list[dict]) -> str:
     if len(recovered_sites) == 1:
-        return f"[Site Monitor] RECOVERED — {recovered_sites[0].get('site_name', 'Unknown site')}"
-    return f"[Site Monitor] RECOVERED — {len(recovered_sites)} websites"
+        return f"[Site Monitor] RECOVERED - {recovered_sites[0].get('site_name', 'Unknown site')}"
+    return f"[Site Monitor] RECOVERED - {len(recovered_sites)} websites"
 
 
 def build_down_text_body(down_sites: list[dict], dashboard_url: str) -> str:
@@ -128,11 +96,6 @@ def build_recovery_text_body(recovered_sites: list[dict], dashboard_url: str) ->
     lines.append("")
 
     for site in recovered_sites:
-        downtime_text = format_downtime(
-            site.get("down_started_at_utc"),
-            site.get("recovered_at_utc"),
-        )
-
         lines.append(f"Site: {site.get('site_name', '-')}")
         lines.append(f"Endpoint ID: {site.get('endpoint_id', '-')}")
         lines.append(f"URL: {site.get('url', '-')}")
@@ -140,7 +103,8 @@ def build_recovery_text_body(recovered_sites: list[dict], dashboard_url: str) ->
         lines.append(f"Status code: {site.get('status_code', '-') or '-'}")
         lines.append(f"Last checked: {site.get('last_checked', '-')}")
         lines.append(f"Tracking since: {site.get('tracking_since', '-')}")
-        lines.append(f"Downtime: {downtime_text}")
+        lines.append(f"Down from: {site.get('down_started_at_display', 'Unavailable')}")
+        lines.append(f"Recovered at: {site.get('recovered_at_display', 'Unavailable')}")
         lines.append("")
 
     lines.append(f"Dashboard: {dashboard_url}")
@@ -211,6 +175,7 @@ def collect_alert_changes(snapshot: dict, alerts_state: dict) -> tuple[list[dict
                     {
                         **site,
                         "down_started_at_utc": down_started_at,
+                        "down_started_at_display": site.get("last_checked", "-"),
                     }
                 )
 
@@ -219,6 +184,7 @@ def collect_alert_changes(snapshot: dict, alerts_state: dict) -> tuple[list[dict
                 "last_seen_state": "DOWN",
                 "last_seen_at": observed_at,
                 "down_started_at": down_started_at or observed_at,
+                "down_started_at_display": site.get("last_checked", "-"),
             }
             continue
 
@@ -227,7 +193,9 @@ def collect_alert_changes(snapshot: dict, alerts_state: dict) -> tuple[list[dict
                 {
                     **site,
                     "down_started_at_utc": down_started_at,
+                    "down_started_at_display": existing.get("down_started_at_display", "Unavailable"),
                     "recovered_at_utc": observed_at,
+                    "recovered_at_display": site.get("last_checked", "-"),
                 }
             )
             continue
@@ -254,6 +222,7 @@ def apply_down_success(next_state: dict, down_sites: list[dict], subject: str) -
             "last_seen_state": "DOWN",
             "last_seen_at": now,
             "down_started_at": down_started_at,
+            "down_started_at_display": site.get("down_started_at_display", existing.get("down_started_at_display", "-")),
             "last_alerted_down_at": now,
             "last_alert_subject": subject,
         }
@@ -274,6 +243,7 @@ def apply_recovery_success(next_state: dict, recovered_sites: list[dict], subjec
             "last_alert_subject": subject,
         }
         entry.pop("down_started_at", None)
+        entry.pop("down_started_at_display", None)
         next_state[key] = entry
 
 

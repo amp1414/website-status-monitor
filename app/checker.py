@@ -29,9 +29,7 @@ LOGS_DIR = DATA_DIR / "logs"
 DEFAULT_TIMEOUT_SECONDS = 10
 DEFAULT_SLOW_MS = 2000
 RETRIES = 3  # normal short retries
-
-OFFICE_CONFIRM_ENDPOINT_ID = 26
-OFFICE_CONFIRM_WAIT_SECONDS = 60
+CONFIRM_WAIT_SECONDS = 60
 
 
 def log_path_for_ts(ts_utc: str) -> Path:
@@ -212,10 +210,6 @@ def classify_http_result(code: int, from_url: str, location: str) -> str:
     return "DOWN"
 
 
-def is_office_confirmation_target(ep: Endpoint) -> bool:
-    return ep.endpoint_id == OFFICE_CONFIRM_ENDPOINT_ID
-
-
 def perform_single_attempt(client: httpx.Client, ep: Endpoint) -> dict:
     t0 = time.perf_counter()
 
@@ -258,14 +252,11 @@ def perform_single_attempt(client: httpx.Client, ep: Endpoint) -> dict:
         }
 
 
-def should_accept_immediately(ep: Endpoint, result: dict) -> bool:
-    if is_office_confirmation_target(ep):
-        return result.get("status_code") == 200
-
-    return result.get("state") in ("UP", "REVIEW")
+def should_accept_immediately(result: dict) -> bool:
+    return result.get("status_code") == 200
 
 
-def run_office_confirmation_retry(
+def run_confirmation_retry(
     client: httpx.Client,
     ep: Endpoint,
     initial_result: dict,
@@ -275,16 +266,16 @@ def run_office_confirmation_retry(
 
     print(
         f"[confirm] endpoint {ep.endpoint_id}: non-200 after normal retries; "
-        f"waiting {OFFICE_CONFIRM_WAIT_SECONDS}s before one final confirmation"
+        f"waiting {CONFIRM_WAIT_SECONDS}s before one final confirmation"
     )
-    time.sleep(OFFICE_CONFIRM_WAIT_SECONDS)
+    time.sleep(CONFIRM_WAIT_SECONDS)
 
     confirm_result = perform_single_attempt(client, ep)
     total_attempts = int(initial_result.get("attempts", RETRIES)) + 1
     confirm_result["attempts"] = total_attempts
 
     if confirm_result.get("status_code") != 200:
-        note = f"Confirmed after {OFFICE_CONFIRM_WAIT_SECONDS}s retry"
+        note = f"Confirmed after {CONFIRM_WAIT_SECONDS}s retry"
         if confirm_result.get("error_detail"):
             confirm_result["error_detail"] = f"{confirm_result['error_detail']} | {note}"
         else:
@@ -300,7 +291,7 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
         result = perform_single_attempt(client, ep)
         last_result = result
 
-        if should_accept_immediately(ep, result):
+        if should_accept_immediately(result):
             return {
                 **result,
                 "attempts": attempt,
@@ -321,10 +312,7 @@ def check_endpoint(client: httpx.Client, ep: Endpoint) -> dict:
         "attempts": RETRIES,
     }
 
-    if is_office_confirmation_target(ep):
-        return run_office_confirmation_retry(client, ep, final_result)
-
-    return final_result
+    return run_confirmation_retry(client, ep, final_result)
 
 
 def append_check_row(path: Path, ts_utc: str, site_id: int, endpoint_id: int, result: dict) -> None:
@@ -358,7 +346,7 @@ def main() -> list[Endpoint]:
 
     now_utc = utc_now().isoformat(timespec="seconds")
     print(
-        f"Checker poll at {now_utc} (UTC) — due now: {len(due_endpoints)} / {len(endpoints)} endpoints"
+        f"Checker poll at {now_utc} (UTC) - due now: {len(due_endpoints)} / {len(endpoints)} endpoints"
     )
 
     if not due_endpoints:
